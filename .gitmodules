@@ -1,3 +1,3 @@
-[submodule "buildroot"]
-	path = buildroot
-	url = https://gitlab.com/buildroot.org/buildroot
+[submodule "final-project-src"]
+	path = final-project-src
+	url = https://github.com/fed67/linux-embedded-system-final-project.git
