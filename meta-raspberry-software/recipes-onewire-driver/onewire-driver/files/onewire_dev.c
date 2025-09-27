@@ -6,7 +6,6 @@
 
 #include <linux/gpio/consumer.h>   /* For GPIO Descriptor interface */
 #include <linux/platform_device.h> /* For platform devices */
-// #include <linux/interrupt.h>            /* For IRQ */
 #include <linux/delay.h>
 #include <linux/of.h> /* For DT*/
 
@@ -125,7 +124,7 @@ write_cmd (struct gpio_desc *request_out, char *data, size_t length)
         {
             if (data[i] & bit_mask[j])
             {
-                printk ("Write 1 \n");
+                // printk ("Write 1 \n");
                 gpiod_set_value (request_out, 0);
                 // usleep(1);
                 udelay (3);
@@ -135,7 +134,7 @@ write_cmd (struct gpio_desc *request_out, char *data, size_t length)
             }
             else
             {
-                printk ("Write 0 \n");
+                // printk ("Write 0 \n");
                 gpiod_set_value (request_out, 0);
                 udelay (60);
                 gpiod_set_value (request_out, 1);
@@ -197,10 +196,18 @@ reset (struct gpio_desc *request_out, struct gpio_desc *request_in)
 
     gpiod_set_value (request_out, 0);
 
+    udelay(500);
+
     gpiod_set_value (request_out, 1);
 
     // wit until device finished pull down
     wait_until_rising_edge (request_in);
+
+
+    int ret = wait_until_rising_edge (onewire_pin_in);
+    printk ("ret wait %i \n", ret);
+
+    udelay (500);
 }
 
 // Define file operation functions
@@ -225,7 +232,6 @@ onewire_release (struct inode *inode, struct file *filp)
 static ssize_t
 onewire_read (struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
-    // struct onewire_dev *dev = (struct onewire_dev *)filp->private_data;
     ssize_t bytes_read = 0;
 
     if (count > s_dev->buffer_size - *f_pos)
@@ -233,40 +239,35 @@ onewire_read (struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
         count = s_dev->buffer_size - *f_pos;
     }
     printk ("READ \n");
+    printk("f_pos %lu count %lu \n", f_pos, count); 
     struct read_data_t *result;
 
     printk ("size %i \n", kfifo_size (&result_fifo));
 
     printk ("use kfifo_put \n");
-    int ret = kfifo_get (&result_fifo, &result);
-    if (ret == 0)
+    int processed_elements = kfifo_get (&result_fifo, &result);
+    printk ("ptr_adr %p processed_elements %i \n", result, processed_elements);
+    if (processed_elements == 0)
     { // if fifo is empty stop reading
         return 0;
     }
-    printk ("ptr_adr %p ret %i \n", result, ret);
-    printk ("result size %u \n", result->size);
 
-    // int ret = 	kfifo_get(&result_fifo, result);
-    // printk("ptr_adr %p ret %i \n", result, ret);
+	for(size_t i = 0; i < result->size; i++) {
+		printk("c %x ", result->data[i]);
+		s_dev->kernel_buffer[i] = result->data[i];
+	}
 
-    // printk("fifo ret %i size %lu \n", ret, result->size);
-    if (kfifo_size (&result_fifo))
-    {
 
-        // kfifo_get(&result_fifo, &data);
+	size_t min_count = s_dev->buffer_size;
+	if(  result->size < min_count )
+		min_count = result->size;
 
-        if (copy_to_user (buf, s_dev->kernel_buffer + *f_pos, count))
+	printk("result size %lu min_count %u \n", result->size, min_count);
+        if (copy_to_user (buf, s_dev->kernel_buffer, min_count))
         {
             return -EFAULT; // Failed to copy to user space
         }
-    }
-    else
-    {
-        if (copy_to_user (buf, s_dev->kernel_buffer + *f_pos, count))
-        {
-            return -EFAULT; // Failed to copy to user space
-        }
-    }
+
 
     kfree (result);
 
@@ -308,18 +309,60 @@ onewire_write (struct file *filp, const char __user *buf, size_t count, loff_t *
         {
             reset (onewire_pin, onewire_pin_in);
         }
-        else if (string_cmp (s_dev->kernel_buffer, "ReadAddress", 11))
+        else if (string_cmp (s_dev->kernel_buffer, "RA", 2)) // Read Address
         {
+	    printk("Read Address \n");
             reset (onewire_pin, onewire_pin_in);
-            int ret = wait_until_rising_edge (onewire_pin_in);
-            printk ("ret wait %i \n", ret);
-            udelay (300);
 
+	
             // char data[2] = { 0xCC, 0xBE };
             char data[1] = { 0x33 };
             write_cmd (onewire_pin, data, 1);
 
+            udelay (500);
+            char data_read[8] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+            read_cmd (onewire_pin, onewire_pin_in, data_read, 8);
+
+            struct read_data_t *result = kmalloc (sizeof (struct read_data_t), GFP_KERNEL);
+            for (int i = 0; i < 8; i++)
+            {
+                result->data[i] = data_read[i];
+            }
+            result->size = 8;
+
+            printk ("prt adr %p &adr %p \n", result, &result);
+            kfifo_put (&result_fifo, result); 
+	
+        }
+        else if (string_cmp (s_dev->kernel_buffer, "WS", 2)) // Write Scrathpad
+        {
+            reset (onewire_pin, onewire_pin_in);
+
+
+            char data[7];
+	    data[0] = 0x4E;
+            data[1] = 0x4E;
+            for (int i = 0; i < min (5, count - 2); i++)
+            {
+                data[i + 2] = s_dev->kernel_buffer[i + 3];
+            }
+            write_cmd (onewire_pin, data, sizeof(data));
+
             udelay (600);
+        }
+        else if (string_cmp (s_dev->kernel_buffer, "RS", 2)) // Read Scrathpad
+        {
+	        printk("Read scratchpad \n");
+            reset (onewire_pin, onewire_pin_in);
+
+
+            char data[2];
+            data[0] = 0xCC;
+	    data[1] = 0xBE;
+            write_cmd (onewire_pin, data, 2);
+
+            udelay (600);
+
             char data_read[8] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
             read_cmd (onewire_pin, onewire_pin_in, data_read, 8);
 
@@ -332,6 +375,30 @@ onewire_write (struct file *filp, const char __user *buf, size_t count, loff_t *
 
             printk ("prt adr %p &adr %p \n", result, &result);
             kfifo_put (&result_fifo, result);
+        }
+        else if (string_cmp (s_dev->kernel_buffer, "CT", 2)) // convert temperature
+        {
+            reset (onewire_pin, onewire_pin_in);
+
+
+            char data[2];
+	        data[0] = 0xCC;
+            data[1] = 0x44;
+            write_cmd (onewire_pin, data, 2);
+
+            udelay (200);
+        }
+        else if (string_cmp (s_dev->kernel_buffer, "CP", 2)) // copy temp
+        {
+            reset (onewire_pin, onewire_pin_in);
+
+
+            char data[2];
+	    data[0] = 0xCC;
+            data[1] = 0x48;
+            write_cmd (onewire_pin, data, 2);
+
+            udelay (200);
         }
         else
         {
@@ -384,7 +451,6 @@ onewire_probe (struct platform_device *pdev)
         pr_crit ("dt_gpio - Error! Could not read 'label'\n");
         return -1;
     }
-    pr_info ("dt_gpio - label: %s\n", label);
 
     onewire_pin = gpiod_get (dev, PIN_ONEWIRE_OUT, GPIOD_OUT_HIGH);
     if (IS_ERR (onewire_pin))
@@ -393,7 +459,6 @@ onewire_probe (struct platform_device *pdev)
         return -1 * IS_ERR (onewire_pin);
     }
 
-    printk ("used gpio 2 \n");
 
     onewire_pin_in = gpiod_get (dev, PIN_ONEWIRE_IN, GPIOD_OUT_HIGH);
     if (IS_ERR (onewire_pin_in))
