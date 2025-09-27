@@ -15,4 +15,3 @@
 		onewirein-gpio = <&gpio 14 0 >;
 	};
 };
-
