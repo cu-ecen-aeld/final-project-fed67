@@ -2,9 +2,9 @@ CXX ?= g++
 CFLAGS ?= -Wall -O2 -std=c++20
 LDFLAGS ?=
 
-all: myserver
+all: mydaemon
 
-myserver: main.cpp
+mydaemon: main.cpp
 	$(CXX) $(CFLAGS) -o tcp-server main.cpp logger.cpp $(LDFLAGS)
 
 install:

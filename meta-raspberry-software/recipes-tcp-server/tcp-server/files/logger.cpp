@@ -16,3 +16,4 @@ Logger::~Logger() {
         this->fs.close();
     }
 }
+
